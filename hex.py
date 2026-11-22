@@ -130,6 +130,59 @@ def hexdump(
     return '\n'.join(rows)
 
 
+def unhexdump(data: bytes | str) -> bytes:
+    r"""把 hexdump 文本还原为字节；偏移列与 ASCII 栏都被忽略。
+
+    兼容本工具的输出、``hexdump -C``、``xxd -g1``、``od -tx1`` 与 ``od -tx1z``。
+
+    格式规则：偏移是 6..16 位 hex、可带尾部冒号；其值不解释，所以 ``od`` 的八进制
+    偏移也能读。其后每个「恰好两位 hex」的 token 是一个字节，遇到第一个其它 token
+    （ASCII 栏起点）即停止，余下整行忽略。每行字节数可变。
+
+    以下输入会报错：传统 ``hexdump`` 的 4 位字（请用 ``hexdump -C``）、无偏移行
+    （属于 ``-p``），以及 ``hexdump``/``od``/``xxd`` 的 ``*`` 折叠行——展开折叠
+    需要解释偏移值，而这里刻意忽略偏移。避免折叠：``hexdump``/``od`` 加 ``-v``，
+    ``xxd`` 去掉 ``-a``。
+
+    各工具的折叠规则不同：``hexdump``/``od`` 压缩任意重复行，``xxd -a`` 只压缩
+    全零行；``xxd -r`` 能借偏移列展开自己的 ``*``，但跨工具的 ``*`` 不可靠。
+
+    另外，ASCII 栏若恰好以两位 hex 形式的 token 开头，会被误读为一个字节。
+
+    >>> unhexdump(b'00000000  61 62 63  |abc|\n')
+    b'abc'
+    >>> unhexdump(b'00000000: 7f 45  |.E|\n')
+    b'\x7fE'
+    >>> unhexdump(b'000000 7f 45  >.E<\n')
+    b'\x7fE'
+    >>> unhexdump(hexdump(b'POST / HTTP/1.1\r\n\r\nnull')) == b'POST / HTTP/1.1\r\n\r\nnull'
+    True
+    """
+    if isinstance(data, str):
+        try:
+            data = data.encode('ascii')
+        except UnicodeEncodeError as exc:
+            raise ValueError('hexdump 文本必须是 ASCII') from exc
+    out = bytearray()
+    for raw_line in data.splitlines():
+        tokens = raw_line.split()
+        if not tokens:
+            continue
+        if tokens[0] == b'*':
+            raise ValueError('不支持 hexdump/od/xxd 的 * 折叠行（hexdump/od 加 -v，xxd 去掉 -a）')
+        if not re.fullmatch(rb'[0-9a-fA-F]{6,16}:?', tokens[0]):
+            raise ValueError(f'无法解析 revert 行：{raw_line!r}')
+        line_bytes = bytearray()
+        for token in tokens[1:]:
+            if not re.fullmatch(rb'[0-9a-fA-F]{2}', token):
+                break
+            line_bytes.append(int(token, 16))
+        if not line_bytes and len(tokens) > 1:
+            raise ValueError(f'无法解析 revert 行（需要两位一组的 hex 字节）：{raw_line!r}')
+        out.extend(line_bytes)
+    return bytes(out)
+
+
 def _width(text: str) -> int:
     """`--width` 取值校验（1..256）。"""
     value = int(text)
@@ -216,6 +269,12 @@ def _parser() -> argparse.ArgumentParser:
         metavar='N',
         help='只读取前 N 个字节（默认全部）',
     )
+    parser.add_argument(
+        '-r',
+        '--revert',
+        action='store_true',
+        help='反向模式：把 hexdump 文本还原为原始字节写到 stdout',
+    )
     return parser
 
 
@@ -235,6 +294,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.revert and any(
+        (
+            args.width != DEFAULT_WIDTH,
+            args.split,
+            args.delimiter is not None,
+            args.offset != 0,
+            args.length is not None,
+        )
+    ):
+        parser.error('--revert 不能与其它选项同时使用')
     try:
         if args.file:
             with Path(args.file).open('rb') as stream:
@@ -247,6 +316,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     except OSError as exc:
         parser.error(str(exc))
+    if args.revert:
+        try:
+            raw = unhexdump(data)
+        except ValueError as exc:
+            parser.error(str(exc))
+        sys.stdout.buffer.write(raw)
+        return 0
     text = hexdump(
         data,
         width=args.width,

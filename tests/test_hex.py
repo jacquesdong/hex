@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hex import hexdump, main
+from hex import hexdump, main, unhexdump
 
 
 def test_default_is_hd_style() -> None:
@@ -199,3 +199,122 @@ def test_main_rejects_empty_delimiter(capsys: pytest.CaptureFixture[str]) -> Non
 def test_hexdump_rejects_empty_delimiter() -> None:
     with pytest.raises(ValueError, match='delimiter'):
         hexdump(b'x', delimiter=b'')
+
+
+@pytest.mark.parametrize(
+    'payload',
+    [b'abc', b'POST / HTTP/1.1\r\n\r\nnull', bytes(range(256)), b''],
+)
+def test_unhexdump_roundtrip(payload: bytes) -> None:
+    assert unhexdump(hexdump(payload)) == payload
+
+
+def test_unhexdump_ignores_offset_gaps() -> None:
+    dump = (
+        b'00000000  61 62                                             |ab|\n'
+        b'00000010  78 79                                             |xy|\n'
+    )
+    assert unhexdump(dump) == b'abxy'
+
+
+def test_unhexdump_skips_offset_only_line() -> None:
+    dump = b'00000000  61 62  |ab|\n00000002\n'
+    assert unhexdump(dump) == b'ab'
+
+
+def test_unhexdump_accepts_xxd_output() -> None:
+    dump = (
+        b'00000000: 7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00  .ELF............\n'
+        b'00000010: 03 00 3e 00 01 00 00 00 10 4f 00 00 00 00 00 00  ..>......O......\n'
+    )
+    assert unhexdump(dump) == bytes.fromhex(
+        '7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 '
+        '03 00 3e 00 01 00 00 00 10 4f 00 00 00 00 00 00'
+    )
+
+
+def test_unhexdump_accepts_od_output() -> None:
+    dump = (
+        b'000000 7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00  >.ELF............<\n'
+        b'000010 03 00 3e 00 01 00 00 00 10 4f 00 00 00 00 00 00  >..>......O......<\n'
+        b'000020\n'
+    )
+    assert unhexdump(dump) == bytes.fromhex(
+        '7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 '
+        '03 00 3e 00 01 00 00 00 10 4f 00 00 00 00 00 00'
+    )
+
+
+def test_unhexdump_accepts_octal_style_offsets() -> None:
+    dump = b'0000000 7f 45 4c 46\n0000020 03 00 3e 00\n0000074\n'
+    assert unhexdump(dump) == bytes.fromhex('7f 45 4c 46 03 00 3e 00')
+
+
+def test_unhexdump_accepts_variable_bytes_per_line() -> None:
+    dump = (
+        b'0000000 7f 45 4c 46  >.ELF<\n'
+        b'0000004 02 01 01 00  >....<\n'
+        b'0000008\n'
+    )
+    assert unhexdump(dump) == bytes.fromhex('7f 45 4c 46 02 01 01 00')
+
+
+def test_unhexdump_rejects_offsetless_line() -> None:
+    with pytest.raises(ValueError, match='无法解析'):
+        unhexdump(b'7f 45 4c 46\n')
+
+
+def test_unhexdump_rejects_star_line() -> None:
+    with pytest.raises(ValueError, match=r'hexdump/od/xxd.*-v.*-a'):
+        unhexdump(b'00000000  00 00  |..|\n*\n00000040\n')
+
+
+def test_unhexdump_rejects_malformed_line() -> None:
+    with pytest.raises(ValueError, match='无法解析'):
+        unhexdump(b'not a dump\n')
+
+
+def test_unhexdump_rejects_non_ascii_text() -> None:
+    with pytest.raises(ValueError, match='ASCII'):
+        unhexdump('00000000  61 62  |ab|\n\xff')
+
+
+def test_unhexdump_rejects_word_tokens() -> None:
+    with pytest.raises(ValueError, match='hex 字节'):
+        unhexdump(b'0000000 457f 464c 0102 0001\n')
+
+
+def test_main_revert_rejects_word_dump(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'0000000 457f 464c 0102 0001\n0000010\n'))
+    monkeypatch.setattr('sys.stdin', stream)
+    with pytest.raises(SystemExit) as exc:
+        main(['-r'])
+    assert exc.value.code == 2
+    assert 'hex 字节' in capsys.readouterr().err
+
+
+def test_main_revert_writes_raw_bytes(
+    monkeypatch: pytest.MonkeyPatch, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(hexdump(b'abc').encode('ascii')))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['-r']) == 0
+    assert capsysbinary.readouterr().out == b'abc'
+
+
+def test_main_revert_reads_file(
+    tmp_path: Path, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    path = tmp_path / 'dump.txt'
+    path.write_bytes(hexdump(b'xyz').encode('ascii'))
+    assert main(['--revert', str(path)]) == 0
+    assert capsysbinary.readouterr().out == b'xyz'
+
+
+def test_main_revert_rejects_other_options(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(['-r', '-w', '4'])
+    assert exc.value.code == 2
+    assert '--revert' in capsys.readouterr().err
