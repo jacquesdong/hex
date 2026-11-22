@@ -14,8 +14,8 @@ def test_default_is_hd_style() -> None:
     )
 
 
-def test_split_lines_keeps_line_endings_out_of_ascii() -> None:
-    assert hexdump(b'AB\r\n', split_lines=True) == (
+def test_split_keeps_line_endings_out_of_ascii() -> None:
+    assert hexdump(b'AB\r\n', split=True) == (
         '00000000  41 42 0d 0a                                       |AB|'
     )
 
@@ -121,7 +121,7 @@ def test_main_length_with_file(tmp_path: Path, capsys: pytest.CaptureFixture[str
     )
 
 
-def test_main_length_with_split_lines(
+def test_main_length_with_split(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     stream = io.TextIOWrapper(io.BytesIO(b'AB\r\nCD\r\n'))
@@ -132,8 +132,70 @@ def test_main_length_with_split_lines(
     )
 
 
+def test_main_long_split_option(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'AB\r\n'))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['--split']) == 0
+    assert capsys.readouterr().out == (
+        '00000000  41 42 0d 0a                                       |AB|\n'
+    )
+
+
 def test_main_rejects_negative_length(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc:
         main(['--length=-1'])
     assert exc.value.code == 2
     assert 'length' in capsys.readouterr().err
+
+
+def test_main_delimiter_keeps_bytes_in_hex(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'a,b,'))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['-d', ',']) == 0
+    assert capsys.readouterr().out == (
+        '00000000  61 2c                                             |a|\n'
+        '00000002  62 2c                                             |b|\n'
+    )
+
+
+def test_main_delimiter_escape(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'a\x00b'))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['-d', r'\x00']) == 0
+    assert capsys.readouterr().out == (
+        '00000000  61 00                                             |a|\n'
+        '00000002  62                                                |b|\n'
+    )
+
+
+def test_main_split_and_delimiter_are_mutually_exclusive(
+    capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(['-s', '-d', ','])
+    assert exc.value.code == 2
+    assert 'not allowed' in capsys.readouterr().err
+
+
+def test_main_rejects_bad_delimiter(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(['-d', r'\q'])
+    assert exc.value.code == 2
+    assert 'delimiter' in capsys.readouterr().err
+
+
+def test_main_rejects_empty_delimiter(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(['-d', ''])
+    assert exc.value.code == 2
+
+
+def test_hexdump_rejects_empty_delimiter() -> None:
+    with pytest.raises(ValueError, match='delimiter'):
+        hexdump(b'x', delimiter=b'')

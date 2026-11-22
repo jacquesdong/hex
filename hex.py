@@ -2,12 +2,13 @@
 r"""hd (``hexdump -C``) 风格的字节转储工具。
 
 偏移量列 + 十六进制（每 8 字节分组）+ ASCII 侧栏，ASCII 列左缘始终对齐。
-默认连续折行（等同 hd）；``--split-lines`` 改为按数据自身换行断行。
+默认连续折行（等同 hd）；``--split`` 改为按数据自身换行断行。
 """
 
 from __future__ import annotations
 
 import argparse
+import codecs
 import re
 import sys
 from collections.abc import Sequence
@@ -17,16 +18,18 @@ DEFAULT_WIDTH = 16
 WIDTH_RANGE = (1, 256)
 _GROUP = 8
 _PRINTABLE = (0x20, 0x7E)
+_DELIM_ESCAPE_RE = re.compile(r'\\(?:[\\rtn]|x[0-9a-fA-F]{2})')
 
 
-def _split_lines(data: bytes) -> list[bytes]:
-    r"""按 ``\r\n`` / ``\n`` 切分（保留行尾换行字节），不含换行的尾段也返回。"""
+def _split_by(data: bytes, delimiter: bytes) -> list[bytes]:
+    r"""按 ``delimiter`` 切分并保留分隔符（附在前一段末尾），无分隔的尾段也返回。"""
     if not data:
         return []
-    lines = re.split(rb'(?<=\n)', data)
-    if lines and lines[-1] == b'':
-        lines.pop()
-    return lines
+    parts = data.split(delimiter)
+    blocks = [part + delimiter for part in parts[:-1]]
+    if parts[-1]:
+        blocks.append(parts[-1])
+    return blocks
 
 
 def _hex_field(chunk: bytes) -> str:
@@ -43,13 +46,15 @@ def _hex_field_width(width: int) -> int:
     return len(_hex_field(bytes(width)))
 
 
-def _ascii_of(chunk: bytes, *, drop_line_endings: bool = False) -> str:
-    """ASCII 侧栏：可打印原样、其余 ``.``；换行切分模式下丢掉行尾的 CR/LF。"""
-    body = (
-        chunk.rstrip(b'\r\n')
-        if drop_line_endings and chunk.endswith((b'\r', b'\n'))
-        else chunk
-    )
+def _ascii_of(chunk: bytes, *, strip: bytes = b'') -> str:
+    """ASCII 侧栏：可打印原样、其余 ``.``；行尾的 ``strip`` 分隔符不显示。"""
+    body = chunk
+    if strip and body.endswith(strip):
+        body = body[: -len(strip)]
+        if strip == b'\n':
+            body = body.rstrip(b'\r')
+    elif strip == b'\n' and body.endswith(b'\r'):
+        body = body[:-1]
     low, high = _PRINTABLE
     return ''.join(chr(byte) if low <= byte <= high else '.' for byte in body)
 
@@ -59,13 +64,15 @@ def hexdump(
     width: int = DEFAULT_WIDTH,
     offset: int = 0,
     *,
-    split_lines: bool = False,
+    split: bool = False,
+    delimiter: bytes | None = None,
 ) -> str:
     r"""把字节渲染为 hd (``hexdump -C``) 风格的文本。
 
-    默认**连续**折行（与 hd 一样：不看数据里的换行）；``split_lines=True`` 时改为
+    默认**连续**折行（与 hd 一样：不看数据里的换行）；``split=True`` 时改为
     按数据自身的 ``\r\n`` / ``\n`` 断行 —— 一行 = 报文里的一行，行尾换行字节只进
     hex 区、不进 ASCII 栏（即 ``sock_proxy.py`` 里 `hexdump` 的行为）。
+    ``delimiter`` 可指定任意分隔符作为行边界（隐含 ``split``），分隔符同样只进 hex 区。
 
     十六进制区每 8 字节多一个空格分组，并一律补空格到**整行**（``width`` 字节）的
     字段宽，所以 ASCII 侧栏左缘固定在同一列；补白在中间，行尾不留空白。返回值按行
@@ -82,14 +89,18 @@ def hexdump(
     >>> print(hexdump(b'\x00\x01\xff', width=8))
     00000000  00 01 ff                 |...|
 
-    >>> print(hexdump(b'AB\r\n', width=16, split_lines=True))
+    >>> print(hexdump(b'AB\r\n', width=16, split=True))
     00000000  41 42 0d 0a                                       |AB|
+
+    >>> print(hexdump(b'a,b,', width=4, delimiter=b','))
+    00000000  61 2c        |a|
+    00000002  62 2c        |b|
 
     >>> print(hexdump(b'POST / HTTP/1.1\r\n\r\nnull'))
     00000000  50 4f 53 54 20 2f 20 48  54 54 50 2f 31 2e 31 0d  |POST / HTTP/1.1.|
     00000010  0a 0d 0a 6e 75 6c 6c                              |...null|
 
-    >>> print(hexdump(b'POST / HTTP/1.1\r\n\r\nnull', split_lines=True))
+    >>> print(hexdump(b'POST / HTTP/1.1\r\n\r\nnull', split=True))
     00000000  50 4f 53 54 20 2f 20 48  54 54 50 2f 31 2e 31 0d  |POST / HTTP/1.1|
     00000010  0a                                                ||
     00000011  0d 0a                                             ||
@@ -100,8 +111,11 @@ def hexdump(
     """
     if not WIDTH_RANGE[0] <= width <= WIDTH_RANGE[1]:
         raise ValueError(f'width 必须在 {WIDTH_RANGE[0]}..{WIDTH_RANGE[1]} 之间，收到 {width}')
+    boundary = delimiter if delimiter is not None else (b'\n' if split else None)
+    if boundary is not None and not boundary:
+        raise ValueError('delimiter 不能为空')
     field = _hex_field_width(width)
-    blocks = _split_lines(data) if split_lines else ([data] if data else [])
+    blocks = _split_by(data, boundary) if boundary else ([data] if data else [])
     rows: list[str] = []
     pos = 0
     for block in blocks:
@@ -110,7 +124,7 @@ def hexdump(
             hex_text = _hex_field(chunk).ljust(field)
             rows.append(
                 f'{offset + pos:08x}  {hex_text}  '
-                f'|{_ascii_of(chunk, drop_line_endings=split_lines)}|'
+                f'|{_ascii_of(chunk, strip=boundary or b"")}|'
             )
             pos += len(chunk)
     return '\n'.join(rows)
@@ -145,6 +159,17 @@ def _length(text: str) -> int:
     return value
 
 
+def _delimiter(text: str) -> bytes:
+    """`--delimiter` 取值校验：把 ``\\r`` / ``\\xNN`` 等转义解码为字节。"""
+    if not text:
+        raise argparse.ArgumentTypeError('delimiter 不能为空')
+    if '\\' in _DELIM_ESCAPE_RE.sub('', text):
+        raise argparse.ArgumentTypeError(f'delimiter 含无效转义：{text!r}')
+    if any(ord(char) > 0x7F for char in text):
+        raise argparse.ArgumentTypeError('delimiter 只接受 ASCII 字符')
+    return codecs.decode(text, 'unicode_escape').encode('latin-1')
+
+
 def _parser() -> argparse.ArgumentParser:
     """构造 CLI 参数解析器。"""
     parser = argparse.ArgumentParser(
@@ -162,11 +187,19 @@ def _parser() -> argparse.ArgumentParser:
         metavar='N',
         help=f'折行宽度（{WIDTH_RANGE[0]}..{WIDTH_RANGE[1]}，默认 {DEFAULT_WIDTH}）',
     )
-    parser.add_argument(
+    boundaries = parser.add_mutually_exclusive_group()
+    boundaries.add_argument(
         '-s',
-        '--split-lines',
+        '--split',
         action='store_true',
-        help=r'按数据自身的 \r\n/\n 断行（默认连续折行，等同 hd）',
+        help=r'按数据自身的 \r\n/\n 断行',
+    )
+    boundaries.add_argument(
+        '-d',
+        '--delimiter',
+        type=_delimiter,
+        metavar='PATTERN',
+        help=r'按 PATTERN 标注行边界（保留在 hex 区），支持 \r \n \t \xNN \\ 转义',
     )
     parser.add_argument(
         '-o',
@@ -197,6 +230,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     16
     >>> _length('4')
     4
+    >>> _delimiter(r'\r\n')
+    b'\r\n'
     """
     parser = _parser()
     args = parser.parse_args(argv)
@@ -212,7 +247,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     except OSError as exc:
         parser.error(str(exc))
-    text = hexdump(data, width=args.width, offset=args.offset, split_lines=args.split_lines)
+    text = hexdump(
+        data,
+        width=args.width,
+        offset=args.offset,
+        split=args.split,
+        delimiter=args.delimiter,
+    )
     if text:
         sys.stdout.write(text + '\n')
     return 0
