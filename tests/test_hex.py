@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hex import hexdump, main, unhexdump
+from hex import hexdump, hexplain, main, unhexdump, unhexplain
 
 
 def test_default_is_hd_style() -> None:
@@ -318,3 +318,59 @@ def test_main_revert_rejects_other_options(capsys: pytest.CaptureFixture[str]) -
         main(['-r', '-w', '4'])
     assert exc.value.code == 2
     assert '--revert' in capsys.readouterr().err
+
+
+def test_hexplain_lines() -> None:
+    assert hexplain(b'abcdef', width=4) == '61626364\n6566'
+    assert hexplain(b'') == ''
+
+
+def test_unhexplain_ignores_whitespace() -> None:
+    assert unhexplain(b'61 62\n63\t64') == b'abcd'
+    assert unhexplain('6162') == b'ab'
+
+
+def test_unhexplain_rejects_bad_input() -> None:
+    with pytest.raises(ValueError, match='奇数'):
+        unhexplain(b'616')
+    with pytest.raises(ValueError, match='非法字符'):
+        unhexplain(b'61 6z')
+
+
+def test_plain_roundtrip() -> None:
+    payload = bytes(range(256))
+    assert unhexplain(hexplain(payload, width=7)) == payload
+
+
+def test_main_plain_writes_hex(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'abc'))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['-p']) == 0
+    assert capsys.readouterr().out == '616263\n'
+
+
+def test_main_plain_width(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'abcdef'))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['-p', '-w', '4']) == 0
+    assert capsys.readouterr().out == '61626364\n6566\n'
+
+
+def test_main_revert_plain(
+    monkeypatch: pytest.MonkeyPatch, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'61 62\n63'))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['-r', '-p']) == 0
+    assert capsysbinary.readouterr().out == b'abc'
+
+
+def test_main_plain_rejects_boundary_options(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(['-p', '-s'])
+    assert exc.value.code == 2
+    assert '--plain' in capsys.readouterr().err

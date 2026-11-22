@@ -183,6 +183,39 @@ def unhexdump(data: bytes | str) -> bytes:
     return bytes(out)
 
 
+def hexplain(data: bytes, width: int = DEFAULT_WIDTH) -> str:
+    r"""把字节渲染为连续小写 hex（无偏移、无 ASCII），每行 ``width`` 字节。
+
+    >>> print(hexplain(b'abcdef', width=4))
+    61626364
+    6566
+    >>> hexplain(b'')
+    ''
+    """
+    if not WIDTH_RANGE[0] <= width <= WIDTH_RANGE[1]:
+        raise ValueError(f'width 必须在 {WIDTH_RANGE[0]}..{WIDTH_RANGE[1]} 之间，收到 {width}')
+    return '\n'.join(data[i : i + width].hex() for i in range(0, len(data), width))
+
+
+def unhexplain(data: bytes | str) -> bytes:
+    r"""把纯 hex 文本还原为字节；空白全部忽略，其余字符必须是 hex 数字。
+
+    >>> unhexplain(b'61 62\n63')
+    b'abc'
+    """
+    if isinstance(data, str):
+        try:
+            data = data.encode('ascii')
+        except UnicodeEncodeError as exc:
+            raise ValueError('纯 hex 文本必须是 ASCII') from exc
+    compact = b''.join(data.split())
+    if any(byte not in b'0123456789abcdefABCDEF' for byte in compact):
+        raise ValueError('纯 hex 文本含非法字符')
+    if len(compact) % 2:
+        raise ValueError('纯 hex 文本位数为奇数')
+    return bytes.fromhex(compact.decode('ascii'))
+
+
 def _width(text: str) -> int:
     """`--width` 取值校验（1..256）。"""
     value = int(text)
@@ -273,7 +306,13 @@ def _parser() -> argparse.ArgumentParser:
         '-r',
         '--revert',
         action='store_true',
-        help='反向模式：把 hexdump 文本还原为原始字节写到 stdout',
+        help='反向模式：把 hexdump（或 -p 纯 hex）还原为原始字节写到 stdout',
+    )
+    parser.add_argument(
+        '-p',
+        '--plain',
+        action='store_true',
+        help='纯 hex 模式：正向输出无偏移/ASCII；与 -r 组合表示输入为纯 hex',
     )
     return parser
 
@@ -294,16 +333,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     parser = _parser()
     args = parser.parse_args(argv)
-    if args.revert and any(
-        (
-            args.width != DEFAULT_WIDTH,
-            args.split,
-            args.delimiter is not None,
-            args.offset != 0,
-            args.length is not None,
-        )
-    ):
-        parser.error('--revert 不能与其它选项同时使用')
+    if args.revert:
+        if any(
+            (
+                args.width != DEFAULT_WIDTH,
+                args.split,
+                args.delimiter is not None,
+                args.offset != 0,
+                args.length is not None,
+            )
+        ):
+            parser.error('--revert 只能与 --plain 组合')
+    elif args.plain and any((args.split, args.delimiter is not None, args.offset != 0)):
+        parser.error('--plain 不能与 --split/--delimiter/--offset 组合')
     try:
         if args.file:
             with Path(args.file).open('rb') as stream:
@@ -318,10 +360,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
     if args.revert:
         try:
-            raw = unhexdump(data)
+            raw = unhexplain(data) if args.plain else unhexdump(data)
         except ValueError as exc:
             parser.error(str(exc))
         sys.stdout.buffer.write(raw)
+        return 0
+    if args.plain:
+        text = hexplain(data, width=args.width)
+        if text:
+            sys.stdout.write(text + '\n')
         return 0
     text = hexdump(
         data,
