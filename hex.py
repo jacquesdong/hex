@@ -145,18 +145,8 @@ def _length(text: str) -> int:
     return value
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    r"""CLI 入口：从文件或 stdin 读字节，按 hd 风格写到 stdout。
-
-    >>> _width('16')
-    16
-    >>> _offset('0x10')
-    16
-    >>> _offset('16')
-    16
-    >>> _length('4')
-    4
-    """
+def _parser() -> argparse.ArgumentParser:
+    """构造 CLI 参数解析器。"""
     parser = argparse.ArgumentParser(
         prog='hex.py',
         description='hd (hexdump -C) 风格的字节转储：偏移量 + 十六进制 + ASCII 侧栏',
@@ -193,6 +183,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar='N',
         help='只读取前 N 个字节（默认全部）',
     )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    r"""CLI 入口：从文件或 stdin 读字节，按 hd 风格写到 stdout。
+
+    >>> _width('16')
+    16
+    >>> _offset('0x10')
+    16
+    >>> _offset('16')
+    16
+    >>> _length('4')
+    4
+    """
+    parser = _parser()
     args = parser.parse_args(argv)
     try:
         if args.file:
