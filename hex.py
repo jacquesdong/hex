@@ -137,6 +137,14 @@ def _offset(text: str) -> int:
     return value
 
 
+def _length(text: str) -> int:
+    """`--length` 取值校验（非负整数）。"""
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f'length 不能为负：{value}')
+    return value
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     r"""CLI 入口：从文件或 stdin 读字节，按 hd 风格写到 stdout。
 
@@ -146,6 +154,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     16
     >>> _offset('16')
     16
+    >>> _length('4')
+    4
     """
     parser = argparse.ArgumentParser(
         prog='hex.py',
@@ -176,9 +186,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar='N',
         help='起始偏移，支持 0x 前缀（默认 0）',
     )
+    parser.add_argument(
+        '-n',
+        '--length',
+        type=_length,
+        metavar='N',
+        help='只读取前 N 个字节（默认全部）',
+    )
     args = parser.parse_args(argv)
     try:
-        data = Path(args.file).read_bytes() if args.file else sys.stdin.buffer.read()
+        if args.file:
+            with Path(args.file).open('rb') as stream:
+                data = stream.read(args.length) if args.length is not None else stream.read()
+        else:
+            data = (
+                sys.stdin.buffer.read(args.length)
+                if args.length is not None
+                else sys.stdin.buffer.read()
+            )
     except OSError as exc:
         parser.error(str(exc))
     text = hexdump(data, width=args.width, offset=args.offset, split_lines=args.split_lines)

@@ -90,3 +90,50 @@ def test_main_reports_missing_file(
         main([str(missing)])
     assert exc.value.code == 2
     assert 'No such file' in capsys.readouterr().err
+
+
+def test_main_length_limits_stdin(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'abcdefghij'))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['-n', '4']) == 0
+    assert capsys.readouterr().out == (
+        '00000000  61 62 63 64                                       |abcd|\n'
+    )
+
+
+def test_main_length_zero_produces_no_output(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'abc'))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['-n', '0']) == 0
+    assert capsys.readouterr().out == ''
+
+
+def test_main_length_with_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = tmp_path / 'sample.bin'
+    path.write_bytes(b'abcdef')
+    assert main(['--length', '3', str(path)]) == 0
+    assert capsys.readouterr().out == (
+        '00000000  61 62 63                                          |abc|\n'
+    )
+
+
+def test_main_length_with_split_lines(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'AB\r\nCD\r\n'))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['-n', '3', '-s']) == 0
+    assert capsys.readouterr().out == (
+        '00000000  41 42 0d                                          |AB|\n'
+    )
+
+
+def test_main_rejects_negative_length(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(['--length=-1'])
+    assert exc.value.code == 2
+    assert 'length' in capsys.readouterr().err
