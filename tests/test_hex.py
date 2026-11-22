@@ -374,3 +374,15 @@ def test_main_plain_rejects_boundary_options(capsys: pytest.CaptureFixture[str])
         main(['-p', '-s'])
     assert exc.value.code == 2
     assert '--plain' in capsys.readouterr().err
+
+
+def test_main_accepts_prefixed_and_leading_zero_integers(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'abcdef'))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['-w', '0x4', '-n', '0o6', '-o', '010']) == 0
+    assert capsys.readouterr().out == (
+        '00000008  61 62 63 64  |abcd|\n'
+        '0000000c  65 66        |ef|\n'
+    )

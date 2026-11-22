@@ -216,9 +216,25 @@ def unhexplain(data: bytes | str) -> bytes:
     return bytes.fromhex(compact.decode('ascii'))
 
 
+def _auto_int(text: str) -> int:
+    r"""解析整数：``0x``/``0b``/``0o`` 前缀按对应进制，前导 ``0`` 按八进制，其余十进制。"""
+    body = text.lstrip('+-')
+    sign = -1 if text.startswith('-') else 1
+    prefix = body[:2].lower()
+    if prefix == '0x':
+        value = int(body, 16)
+    elif prefix == '0b':
+        value = int(body, 2)
+    elif prefix == '0o' or (len(body) > 1 and body.startswith('0')):
+        value = int(body, 8)
+    else:
+        value = int(body, 10)
+    return sign * value
+
+
 def _width(text: str) -> int:
     """`--width` 取值校验（1..256）。"""
-    value = int(text)
+    value = _auto_int(text)
     if not WIDTH_RANGE[0] <= value <= WIDTH_RANGE[1]:
         raise argparse.ArgumentTypeError(
             f'width 必须在 {WIDTH_RANGE[0]}..{WIDTH_RANGE[1]} 之间，收到 {value}'
@@ -229,7 +245,7 @@ def _width(text: str) -> int:
 def _offset(text: str) -> int:
     """`--offset` 取值校验（支持 ``0x`` 前缀）。"""
     try:
-        value = int(text, 0)
+        value = _auto_int(text)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f'offset 无效：{text!r}') from exc
     if value < 0:
@@ -239,7 +255,7 @@ def _offset(text: str) -> int:
 
 def _length(text: str) -> int:
     """`--length` 取值校验（非负整数）。"""
-    value = int(text)
+    value = _auto_int(text)
     if value < 0:
         raise argparse.ArgumentTypeError(f'length 不能为负：{value}')
     return value
@@ -293,7 +309,7 @@ def _parser() -> argparse.ArgumentParser:
         type=_offset,
         default=0,
         metavar='N',
-        help='起始偏移，支持 0x 前缀（默认 0）',
+        help='起始偏移（0x 十六进制、前导 0 八进制、其余十进制；默认 0）',
     )
     parser.add_argument(
         '-n',
@@ -322,11 +338,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     >>> _width('16')
     16
+    >>> _width('0x10')
+    16
     >>> _offset('0x10')
     16
-    >>> _offset('16')
-    16
+    >>> _offset('016')
+    14
+    >>> _offset('0o16')
+    14
     >>> _length('4')
+    4
+    >>> _length('0b100')
     4
     >>> _delimiter(r'\r\n')
     b'\r\n'
