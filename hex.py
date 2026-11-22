@@ -1,10 +1,17 @@
-r"""hd (``hexdump -C``) 风格的字节转储核心。
+#!/usr/bin/env python3
+r"""hd (``hexdump -C``) 风格的字节转储工具。
 
+偏移量列 + 十六进制（每 8 字节分组）+ ASCII 侧栏，ASCII 列左缘始终对齐。
+默认连续折行（等同 hd）；``--split-lines`` 改为按数据自身换行断行。
 """
 
 from __future__ import annotations
 
+import argparse
 import re
+import sys
+from collections.abc import Sequence
+from pathlib import Path
 
 DEFAULT_WIDTH = 16
 WIDTH_RANGE = (1, 256)
@@ -107,3 +114,78 @@ def hexdump(
             )
             pos += len(chunk)
     return '\n'.join(rows)
+
+
+def _width(text: str) -> int:
+    """`--width` 取值校验（1..256）。"""
+    value = int(text)
+    if not WIDTH_RANGE[0] <= value <= WIDTH_RANGE[1]:
+        raise argparse.ArgumentTypeError(
+            f'width 必须在 {WIDTH_RANGE[0]}..{WIDTH_RANGE[1]} 之间，收到 {value}'
+        )
+    return value
+
+
+def _offset(text: str) -> int:
+    """`--offset` 取值校验（支持 ``0x`` 前缀）。"""
+    try:
+        value = int(text, 0)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f'offset 无效：{text!r}') from exc
+    if value < 0:
+        raise argparse.ArgumentTypeError('offset 不能为负')
+    return value
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    r"""CLI 入口：从文件或 stdin 读字节，按 hd 风格写到 stdout。
+
+    >>> _width('16')
+    16
+    >>> _offset('0x10')
+    16
+    >>> _offset('16')
+    16
+    """
+    parser = argparse.ArgumentParser(
+        prog='hex.py',
+        description='hd (hexdump -C) 风格的字节转储：偏移量 + 十六进制 + ASCII 侧栏',
+    )
+    parser.add_argument(
+        'file', nargs='?', metavar='FILE', help='输入文件（省略则从 stdin 读）'
+    )
+    parser.add_argument(
+        '-w',
+        '--width',
+        type=_width,
+        default=DEFAULT_WIDTH,
+        metavar='N',
+        help=f'折行宽度（{WIDTH_RANGE[0]}..{WIDTH_RANGE[1]}，默认 {DEFAULT_WIDTH}）',
+    )
+    parser.add_argument(
+        '-s',
+        '--split-lines',
+        action='store_true',
+        help=r'按数据自身的 \r\n/\n 断行（默认连续折行，等同 hd）',
+    )
+    parser.add_argument(
+        '-o',
+        '--offset',
+        type=_offset,
+        default=0,
+        metavar='N',
+        help='起始偏移，支持 0x 前缀（默认 0）',
+    )
+    args = parser.parse_args(argv)
+    try:
+        data = Path(args.file).read_bytes() if args.file else sys.stdin.buffer.read()
+    except OSError as exc:
+        parser.error(str(exc))
+    text = hexdump(data, width=args.width, offset=args.offset, split_lines=args.split_lines)
+    if text:
+        sys.stdout.write(text + '\n')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
