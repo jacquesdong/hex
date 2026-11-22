@@ -322,6 +322,7 @@ def test_main_revert_rejects_other_options(capsys: pytest.CaptureFixture[str]) -
 
 def test_hexplain_lines() -> None:
     assert hexplain(b'abcdef', width=4) == '61626364\n6566'
+    assert hexplain(b'abcdef', width=0) == '616263646566'
     assert hexplain(b'') == ''
 
 
@@ -386,3 +387,24 @@ def test_main_accepts_prefixed_and_leading_zero_integers(
         '00000008  61 62 63 64  |abcd|\n'
         '0000000c  65 66        |ef|\n'
     )
+
+
+def test_main_plain_width_zero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(b'abcdef'))
+    monkeypatch.setattr('sys.stdin', stream)
+    assert main(['-p', '-w', '0']) == 0
+    assert capsys.readouterr().out == '616263646566\n'
+
+
+def test_main_rejects_width_zero_without_plain(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(['-w', '0'])
+    assert exc.value.code == 2
+    assert '--width 0' in capsys.readouterr().err
+
+
+def test_hexdump_rejects_width_zero() -> None:
+    with pytest.raises(ValueError, match='width 必须在 1'):
+        hexdump(b'x', width=0)

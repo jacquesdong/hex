@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 DEFAULT_WIDTH = 16
-WIDTH_RANGE = (1, 256)
+WIDTH_RANGE = (0, 256)
 _GROUP = 8
 _PRINTABLE = (0x20, 0x7E)
 _DELIM_ESCAPE_RE = re.compile(r'\\(?:[\\rtn]|x[0-9a-fA-F]{2})')
@@ -109,8 +109,8 @@ def hexdump(
     >>> hexdump(b'')
     ''
     """
-    if not WIDTH_RANGE[0] <= width <= WIDTH_RANGE[1]:
-        raise ValueError(f'width 必须在 {WIDTH_RANGE[0]}..{WIDTH_RANGE[1]} 之间，收到 {width}')
+    if width < 1 or width > WIDTH_RANGE[1]:
+        raise ValueError(f'width 必须在 1..{WIDTH_RANGE[1]} 之间，收到 {width}')
     boundary = delimiter if delimiter is not None else (b'\n' if split else None)
     if boundary is not None and not boundary:
         raise ValueError('delimiter 不能为空')
@@ -186,15 +186,20 @@ def unhexdump(data: bytes | str) -> bytes:
 def hexplain(data: bytes, width: int = DEFAULT_WIDTH) -> str:
     r"""把字节渲染为连续小写 hex（无偏移、无 ASCII），每行 ``width`` 字节。
 
+    ``width=0`` 表示不折行，整份数据输出为一行。
+
     >>> print(hexplain(b'abcdef', width=4))
     61626364
     6566
+    >>> hexplain(b'abcdef', width=0)
+    '616263646566'
     >>> hexplain(b'')
     ''
     """
     if not WIDTH_RANGE[0] <= width <= WIDTH_RANGE[1]:
         raise ValueError(f'width 必须在 {WIDTH_RANGE[0]}..{WIDTH_RANGE[1]} 之间，收到 {width}')
-    return '\n'.join(data[i : i + width].hex() for i in range(0, len(data), width))
+    step = width or len(data) or 1
+    return '\n'.join(data[i : i + step].hex() for i in range(0, len(data), step))
 
 
 def unhexplain(data: bytes | str) -> bytes:
@@ -287,7 +292,10 @@ def _parser() -> argparse.ArgumentParser:
         type=_width,
         default=DEFAULT_WIDTH,
         metavar='N',
-        help=f'折行宽度（{WIDTH_RANGE[0]}..{WIDTH_RANGE[1]}，默认 {DEFAULT_WIDTH}）',
+        help=(
+            f'折行宽度（{WIDTH_RANGE[0]}..{WIDTH_RANGE[1]}，'
+            f'0 仅 --plain 不折行，默认 {DEFAULT_WIDTH}）'
+        ),
     )
     boundaries = parser.add_mutually_exclusive_group()
     boundaries.add_argument(
@@ -338,6 +346,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     >>> _width('16')
     16
+    >>> _width('0')
+    0
     >>> _width('0x10')
     16
     >>> _offset('0x10')
@@ -368,6 +378,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error('--revert 只能与 --plain 组合')
     elif args.plain and any((args.split, args.delimiter is not None, args.offset != 0)):
         parser.error('--plain 不能与 --split/--delimiter/--offset 组合')
+    elif not args.plain and args.width == 0:
+        parser.error('--width 0 仅适用于 --plain')
     try:
         if args.file:
             with Path(args.file).open('rb') as stream:
